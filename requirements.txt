@@ -4,8 +4,8 @@ pandas
 numpy
 Pillow
 pytesseract
+pdfplumber
 pdf2image
 opencv-python-headless
-pdfplumber
-tesseract-ocr
-
+openai
+google-generativeai
