@@ -6,3 +6,6 @@ Pillow
 pytesseract
 pdf2image
 opencv-python-headless
+pdfplumber
+tesseract-ocr
+
