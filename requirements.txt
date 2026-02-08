@@ -1,0 +1,8 @@
+# requirements.txt
+streamlit
+pandas
+numpy
+Pillow
+pytesseract
+pdf2image
+opencv-python-headless
