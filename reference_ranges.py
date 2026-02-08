@@ -1,7 +1,11 @@
 """
 Reference ranges and analysis logic for blood investigation parameters.
-Based on standard clinical hematology references.
+Based on standard clinical hematology and biochemistry references.
 """
+
+# ==========================================
+# REFERENCE RANGE DEFINITIONS
+# ==========================================
 
 CBC_REFERENCE_RANGES = {
     'WBC': {
@@ -311,15 +315,16 @@ TFT_REFERENCE_RANGES = {
     },
 }
 
+# ==========================================
+# ANALYSIS LOGIC FUNCTIONS
+# ==========================================
 
-def analyze_parameter(name, value, ref_info):
-    """Analyze a single parameter against reference ranges"""
+def analyze_parameter(name, value, ref_info, gender=None):
+    """Analyze a single parameter against reference ranges, considering gender if available"""
     result = {
         'name': name,
         'value': value,
         'unit': ref_info.get('unit', ''),
-        'ref_low': ref_info.get('low'),
-        'ref_high': ref_info.get('high'),
         'status': 'Normal',
         'deviation_pct': None
     }
@@ -329,90 +334,228 @@ def analyze_parameter(name, value, ref_info):
     except (ValueError, TypeError):
         result['status'] = 'Unable to analyze'
         return result
-    
+
+    # Determine which reference range to use based on gender
     ref_low = ref_info.get('low')
     ref_high = ref_info.get('high')
+    
+    if gender:
+        gender_low = ref_info.get(f'{gender.lower()}_low')
+        gender_high = ref_info.get(f'{gender.lower()}_high')
+        if gender_low is not None: ref_low = gender_low
+        if gender_high is not None: ref_high = gender_high
+    
+    result['ref_low'] = ref_low
+    result['ref_high'] = ref_high
+    
     critical_low = ref_info.get('critical_low')
     critical_high = ref_info.get('critical_high')
     
-    # Check critical values first
+    # Check critical values
     if critical_low is not None and val < critical_low:
         result['status'] = 'Critical Low'
-        if ref_low and ref_low > 0:
-            result['deviation_pct'] = ((ref_low - val) / ref_low) * 100
     elif critical_high is not None and val > critical_high:
         result['status'] = 'Critical High'
-        if ref_high and ref_high > 0:
-            result['deviation_pct'] = ((val - ref_high) / ref_high) * 100
     elif ref_low is not None and val < ref_low:
         result['status'] = 'Low'
-        if ref_low > 0:
-            result['deviation_pct'] = ((ref_low - val) / ref_low) * 100
     elif ref_high is not None and val > ref_high:
         result['status'] = 'High'
-        if ref_high > 0:
-            result['deviation_pct'] = ((val - ref_high) / ref_high) * 100
     else:
         result['status'] = 'Normal'
-        # Calculate where in range
+        
+    # Calculate deviation percentage
+    if result['status'] != 'Normal':
+        if val < ref_low and ref_low != 0:
+            result['deviation_pct'] = ((ref_low - val) / ref_low) * 100
+        elif val > ref_high and ref_high != 0:
+            result['deviation_pct'] = ((val - ref_high) / ref_high) * 100
+    else:
+        # Position in range
         if ref_low is not None and ref_high is not None and ref_high > ref_low:
             mid = (ref_low + ref_high) / 2
             range_span = ref_high - ref_low
             result['deviation_pct'] = ((val - mid) / (range_span / 2)) * 100
-    
+            
     return result
-
 
 def get_sample_quality_assessment(cbc_params):
     """Assess sample quality based on CBC parameters - Rule of Threes and other checks"""
     issues = []
     quality_notes = []
     
+    # Extract common keys or aliases
     rbc = cbc_params.get('RBC', 0)
-    hb = cbc_params.get('Hemoglobin', 0) or cbc_params.get('Hb', 0) or cbc_params.get('Hgb', 0)
-    hct = cbc_params.get('Hematocrit', 0) or cbc_params.get('HCT', 0) or cbc_params.get('PCV', 0)
+    hb = cbc_params.get('Hemoglobin') or cbc_params.get('Hb', 0) or cbc_params.get('Hgb', 0)
+    hct = cbc_params.get('Hematocrit') or cbc_params.get('HCT', 0) or cbc_params.get('PCV', 0)
     mcv = cbc_params.get('MCV', 0)
     mchc = cbc_params.get('MCHC', 0)
-    plt = cbc_params.get('Platelet Count', 0)
     
-    # Rule of Threes
+    # Rule of Threes (RBC x 3 = Hb)
     if rbc > 0 and hb > 0:
         expected_hb = rbc * 3
-        hb_deviation = abs(hb - expected_hb) / expected_hb * 100 if expected_hb > 0 else 0
+        hb_deviation = abs(hb - expected_hb) / expected_hb * 100
         if hb_deviation > 10:
-            issues.append(f"⚠️ Rule of Threes (RBC × 3 ≈ Hb): Expected Hb ~{expected_hb:.1f}, got {hb:.1f} (deviation: {hb_deviation:.1f}%). This may indicate a true hematologic condition or a spurious result.")
+            issues.append(f"⚠️ Rule of Threes (RBC × 3 ≈ Hb): Expected Hb ~{expected_hb:.1f}, got {hb:.1f} (deviation: {hb_deviation:.1f}%).")
         else:
-            quality_notes.append(f"✅ Rule of Threes (RBC × 3 ≈ Hb): PASSES ({rbc:.2f} × 3 = {expected_hb:.1f} vs Hb {hb:.1f})")
+            quality_notes.append(f"✅ Rule of Threes (RBC × 3 ≈ Hb): PASS")
     
+    # Rule of Threes (Hb x 3 = HCT)
     if hb > 0 and hct > 0:
         expected_hct = hb * 3
-        hct_deviation = abs(hct - expected_hct) / expected_hct * 100 if expected_hct > 0 else 0
+        hct_deviation = abs(hct - expected_hct) / expected_hct * 100
         if hct_deviation > 10:
-            issues.append(f"⚠️ Rule of Threes (Hb × 3 ≈ HCT): Expected HCT ~{expected_hct:.1f}%, got {hct:.1f}% (deviation: {hct_deviation:.1f}%). Consider checking for lipemia, cold agglutinins, or spurious results.")
+            issues.append(f"⚠️ Rule of Threes (Hb × 3 ≈ HCT): Expected HCT ~{expected_hct:.1f}%, got {hct:.1f}% (deviation: {hct_deviation:.1f}%).")
         else:
-            quality_notes.append(f"✅ Rule of Threes (Hb × 3 ≈ HCT): PASSES ({hb:.1f} × 3 = {expected_hct:.1f} vs HCT {hct:.1f})")
+            quality_notes.append(f"✅ Rule of Threes (Hb × 3 ≈ HCT): PASS")
     
-    # MCHC check (should be 32-36 g/dL normally)
+    # MCHC check (Spurious results/Hemolysis indicator)
     if mchc > 0:
         if mchc > 37:
-            issues.append(f"⚠️ Elevated MCHC ({mchc:.1f} g/dL): May indicate spherocytosis, cold agglutinins, lipemia, or spurious hemolysis. Recommend peripheral smear review.")
+            issues.append(f"⚠️ Spurious Result Alert: MCHC ({mchc:.1f}) is physiologically high (>37). Consider lipemia, cold agglutinins, or instrument error.")
         elif mchc < 30:
-            issues.append(f"⚠️ Low MCHC ({mchc:.1f} g/dL): Consistent with hypochromia. Consider iron deficiency or thalassemia.")
-    
-    # Check for possible hemolysis indicators
-    if hb > 0 and rbc > 0 and mcv > 0:
-        calculated_hct = rbc * mcv / 10
-        if hct > 0:
-            calc_deviation = abs(hct - calculated_hct) / calculated_hct * 100 if calculated_hct > 0 else 0
-            if calc_deviation > 10:
-                issues.append(f"⚠️ Calculated HCT ({calculated_hct:.1f}%) deviates from reported HCT ({hct:.1f}%) by {calc_deviation:.1f}%. May indicate sample processing issue.")
-    
-    # Check differential adds up to ~100%
+            issues.append(f"⚠️ Low MCHC ({mchc:.1f}): Suggests severe hypochromia.")
+
+    # Differential Check
     diff_params = ['Neutrophils', 'Lymphocytes', 'Monocytes', 'Eosinophils', 'Basophils']
     diff_values = [cbc_params.get(p, 0) for p in diff_params]
     diff_sum = sum(diff_values)
     if diff_sum > 0:
         if abs(diff_sum - 100) > 5:
-            issues.append(f"⚠️ WBC differential sums to {diff_sum:.1f}% (expected ~100%). Verify differential counts.")
+            issues.append(f"⚠️ WBC Differential sums to {diff_sum:.1f}% (Expected ~100%).")
         else:
-            quality_notes.append(f"✅ WBC differential sums to {diff_
+            quality_notes.append(f"✅ WBC Differential Sum: PASS ({diff_sum:.1f}%)")
+
+    return {
+        'is_reliable': len(issues) == 0,
+        'issues': issues,
+        'notes': quality_notes
+    }
+
+def classify_anemia(hb, mcv, mchc, rdw):
+    """Morphological classification of anemia"""
+    if hb >= 12.0: return "No anemia detected."
+    
+    classification = ""
+    if mcv < 80: classification = "Microcytic "
+    elif mcv > 100: classification = "Macrocytic "
+    else: classification = "Normocytic "
+        
+    if mchc < 32: classification += "Hypochromic Anemia"
+    else: classification += "Normochromic Anemia"
+        
+    if rdw > 14.5: classification += " with Anisocytosis"
+        
+    # Correlation Note
+    if "Microcytic" in classification:
+        note = "Commonly seen in Iron Deficiency or Thalassemia."
+    elif "Macrocytic" in classification:
+        note = "Commonly seen in B12/Folate deficiency or Liver Disease."
+    else:
+        note = "Commonly seen in Anemia of Chronic Disease or Acute Blood Loss."
+        
+    return f"{classification}. {note}"
+
+def analyze_liver_injury_pattern(alt, alp):
+    """Determines Hepatocellular vs Cholestatic pattern via R-ratio"""
+    # R = (ALT_Value / ALT_ULN) / (ALP_Value / ALP_ULN)
+    alt_r = alt / 40.0
+    alp_r = alp / 147.0
+    if alp_r == 0: return "Insufficient data."
+    
+    r_ratio = alt_r / alp_r
+    if r_ratio >= 5: return "Pattern: Hepatocellular (e.g., Viral/Toxic Hepatitis)"
+    elif r_ratio <= 2: return "Pattern: Cholestatic (e.g., Biliary Obstruction)"
+    else: return "Pattern: Mixed Liver Injury"
+
+def process_full_report(patient_data, gender=None):
+    """Main processing pipeline for a blood report dictionary"""
+    analysis_results = []
+    summary = {'critical': [], 'high': [], 'low': [], 'interpretations': []}
+    
+    # Aggregate all reference libraries
+    all_refs = {**CBC_REFERENCE_RANGES, **LFT_REFERENCE_RANGES, **KFT_REFERENCE_RANGES, 
+                **HBA1C_REFERENCE_RANGES, **LIPID_PROFILE_REFERENCE_RANGES, 
+                **IRON_STUDIES_REFERENCE_RANGES, **TFT_REFERENCE_RANGES}
+    
+    # Map input keys to official names via aliases
+    alias_map = {}
+    for official_name, info in all_refs.items():
+        alias_map[official_name.lower()] = official_name
+        for alias in info.get('aliases', []):
+            alias_map[alias.lower()] = official_name
+
+    # 1. Individual Parameter Analysis
+    for key, val in patient_data.items():
+        official_name = alias_map.get(key.lower())
+        if official_name:
+            res = analyze_parameter(official_name, val, all_refs[official_name], gender)
+            analysis_results.append(res)
+            
+            # Populate Summary
+            if 'Critical' in res['status']: summary['critical'].append(official_name)
+            elif res['status'] == 'High': summary['high'].append(official_name)
+            elif res['status'] == 'Low': summary['low'].append(official_name)
+
+    # 2. Contextual Clinical Interpretations
+    # Anemia Check
+    hb = patient_data.get('Hb') or patient_data.get('Hemoglobin') or patient_data.get('Hgb')
+    if hb and float(hb) < 12.0:
+        mcv = patient_data.get('MCV', 90)
+        mchc = patient_data.get('MCHC', 34)
+        rdw = patient_data.get('RDW', 13)
+        summary['interpretations'].append(classify_anemia(float(hb), float(mcv), float(mchc), float(rdw)))
+
+    # Liver Check
+    alt = patient_data.get('ALT') or patient_data.get('SGPT')
+    alp = patient_data.get('ALP')
+    if alt and alp and (float(alt) > 40 or float(alp) > 147):
+        summary['interpretations'].append(analyze_liver_injury_pattern(float(alt), float(alp)))
+
+    # 3. Sample Quality Check
+    quality = get_sample_quality_assessment(patient_data)
+
+    return {
+        'results': analysis_results,
+        'summary': summary,
+        'quality': quality
+    }
+
+# ==========================================
+# EXAMPLE EXECUTION
+# ==========================================
+
+if __name__ == "__main__":
+    # Simulated Lab Data
+    test_input = {
+        'Hb': 9.5,
+        'RBC': 3.1,
+        'HCT': 29.0,
+        'MCV': 72.0,
+        'MCHC': 29.5,
+        'RDW': 17.2,
+        'WBC': 14.5,
+        'ALT': 120,
+        'ALP': 95,
+        'Neutrophils': 75,
+        'Lymphocytes': 15,
+        'Monocytes': 10
+    }
+    
+    report = process_full_report(test_input, gender='Female')
+    
+    print("--- BLOOD INVESTIGATION ANALYSIS ---")
+    print(f"Summary: {len(report['summary']['critical'])} Critical, {len(report['summary']['high'])} High, {len(report['summary']['low'])} Low")
+    
+    print("\n[Interpretations]")
+    for inter in report['summary']['interpretations']:
+        print(f"- {inter}")
+        
+    print("\n[Quality Assessment]")
+    for issue in report['quality']['issues']:
+        print(issue)
+        
+    print("\n[Detailed Table]")
+    print(f"{'Parameter':<20} | {'Value':<8} | {'Status':<15}")
+    print("-" * 50)
+    for r in report['results']:
+        print(f"{r['name']:<20} | {r['value']:<8} | {r['status']:<15}")
