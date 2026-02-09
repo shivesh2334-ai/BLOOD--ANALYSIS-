@@ -1,699 +1,638 @@
-# app.py
 import streamlit as st
-import pandas as pd
-import numpy as np
-from PIL import Image
-import pytesseract
-import pdf2image
-import io
-import re
 import json
-from datetime import datetime
-import base64
+import re
+import os
+from PIL import Image
+import io
+from utils import extract_text_from_pdf, extract_text_from_image, parse_blood_report
+from reference_ranges import (
+    CBC_REFERENCE_RANGES, LFT_REFERENCE_RANGES, KFT_REFERENCE_RANGES,
+    HBA1C_REFERENCE_RANGES, LIPID_PROFILE_REFERENCE_RANGES,
+    IRON_STUDIES_REFERENCE_RANGES, TFT_REFERENCE_RANGES,
+    analyze_parameter, get_differential_diagnosis, get_sample_quality_assessment,
+    get_parameter_discussion, get_comprehensive_analysis
+)
+from ai_review import get_ai_review
 
-# Configure page
+# Page Configuration
 st.set_page_config(
-    page_title="CBC Analyzer Pro",
+    page_title="Blood Investigation Analyzer",
     page_icon="🩸",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for medical styling
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
         font-size: 2.5rem;
         font-weight: bold;
-        color: #1e3a8a;
+        color: #c0392b;
         text-align: center;
-        margin-bottom: 1rem;
+        padding: 1rem 0;
+        border-bottom: 3px solid #c0392b;
+        margin-bottom: 2rem;
     }
-    .parameter-box {
-        background-color: #f0f9ff;
+    .sub-header {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #2c3e50;
+        padding: 0.5rem 0;
+        border-bottom: 2px solid #3498db;
+        margin: 1rem 0;
+    }
+    .parameter-box-normal {
+        background-color: #d4edda;
+        border: 2px solid #28a745;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 8px 0;
+        text-align: center;
+    }
+    .parameter-box-low {
+        background-color: #fff3cd;
+        border: 2px solid #ffc107;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 8px 0;
+        text-align: center;
+    }
+    .parameter-box-high {
+        background-color: #f8d7da;
+        border: 2px solid #dc3545;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 8px 0;
+        text-align: center;
+    }
+    .parameter-box-critical {
+        background-color: #f5c6cb;
+        border: 3px solid #721c24;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 8px 0;
+        text-align: center;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+    }
+    .param-name {
+        font-size: 0.85rem;
+        font-weight: bold;
+        color: #2c3e50;
+        margin-bottom: 5px;
+    }
+    .param-value {
+        font-size: 1.8rem;
+        font-weight: bold;
+        margin: 5px 0;
+    }
+    .param-unit {
+        font-size: 0.75rem;
+        color: #7f8c8d;
+    }
+    .param-range {
+        font-size: 0.7rem;
+        color: #95a5a6;
+        margin-top: 3px;
+    }
+    .param-status {
+        font-size: 0.8rem;
+        font-weight: bold;
+        margin-top: 5px;
+    }
+    .diagnosis-box {
+        background-color: #f8f9fa;
+        border-left: 4px solid #3498db;
+        padding: 15px;
+        margin: 10px 0;
+        border-radius: 0 8px 8px 0;
+    }
+    .quality-box {
+        background-color: #e8f4f8;
+        border: 2px solid #17a2b8;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 15px 0;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        border: 2px solid #ffc107;
         border-radius: 10px;
         padding: 15px;
         margin: 10px 0;
-        border-left: 4px solid #3b82f6;
     }
-    .abnormal-high {
-        color: #dc2626;
+    .critical-alert {
+        background-color: #f8d7da;
+        border: 2px solid #dc3545;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
         font-weight: bold;
     }
-    .abnormal-low {
-        color: #2563eb;
-        font-weight: bold;
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
     }
-    .normal {
-        color: #059669;
-    }
-    .warning-box {
-        background-color: #fef3c7;
-        border-left: 4px solid #f59e0b;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
-    }
-    .info-box {
-        background-color: #dbeafe;
-        border-left: 4px solid #3b82f6;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
-    }
-    .diagnosis-box {
-        background-color: #f3e8ff;
-        border-left: 4px solid #9333ea;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
-    }
-    .stButton>button {
-        background-color: #1e40af;
-        color: white;
-        border-radius: 5px;
-        padding: 0.5rem 1rem;
+    .stTabs [data-baseweb="tab"] {
+        background-color: #f0f2f6;
+        border-radius: 8px 8px 0 0;
+        padding: 10px 20px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Reference ranges for CBC parameters
-REFERENCE_RANGES = {
-    'RBC': {'male': (4.5, 5.5), 'female': (4.0, 5.0), 'unit': 'x10^12/L'},
-    'Hemoglobin': {'male': (13.5, 17.5), 'female': (12.0, 16.0), 'unit': 'g/dL'},
-    'Hematocrit': {'male': (41, 50), 'female': (36, 44), 'unit': '%'},
-    'MCV': {'range': (80, 100), 'unit': 'fL'},
-    'MCH': {'range': (27, 33), 'unit': 'pg'},
-    'MCHC': {'range': (32, 36), 'unit': 'g/dL'},
-    'RDW': {'range': (11.5, 14.5), 'unit': '%'},
-    'WBC': {'range': (4.5, 11.0), 'unit': 'x10^9/L'},
-    'Platelets': {'range': (150, 450), 'unit': 'x10^9/L'},
-    'MPV': {'range': (7.5, 11.5), 'unit': 'fL'},
-    'Neutrophils': {'range': (40, 70), 'unit': '%'},
-    'Lymphocytes': {'range': (20, 40), 'unit': '%'},
-    'Monocytes': {'range': (2, 8), 'unit': '%'},
-    'Eosinophils': {'range': (1, 4), 'unit': '%'},
-    'Basophils': {'range': (0.5, 1), 'unit': '%'},
-    'Reticulocytes': {'range': (0.5, 2.5), 'unit': '%'}
-}
+def get_status_color(status):
+    """Return color based on status"""
+    if status == "Normal":
+        return "#28a745"
+    elif status == "Low" or status == "High":
+        return "#ffc107" if "borderline" in status.lower() else "#dc3545"
+    elif "Critical" in status:
+        return "#721c24"
+    return "#6c757d"
 
-def extract_text_from_image(image):
-    """Extract text from image using OCR"""
-    try:
-        text = pytesseract.image_to_string(image)
-        return text
-    except Exception as e:
-        st.error(f"OCR Error: {str(e)}")
-        return ""
+def get_box_class(status):
+    """Return CSS class based on status"""
+    if status == "Normal":
+        return "parameter-box-normal"
+    elif "Critical" in status:
+        return "parameter-box-critical"
+    elif "Low" in status:
+        return "parameter-box-low"
+    elif "High" in status:
+        return "parameter-box-high"
+    return "parameter-box-normal"
 
-def extract_text_from_pdf(pdf_file):
-    """Extract text from PDF"""
-    try:
-        images = pdf2image.convert_from_bytes(pdf_file.read())
-        text = ""
-        for image in images:
-            text += pytesseract.image_to_string(image) + "\n"
-        return text
-    except Exception as e:
-        st.error(f"PDF Processing Error: {str(e)}")
-        return ""
+def render_parameter_box(name, value, unit, ref_range, status):
+    """Render a parameter box with appropriate styling"""
+    box_class = get_box_class(status)
+    status_color = get_status_color(status)
+    
+    value_color = "#28a745" if status == "Normal" else "#dc3545" if "Critical" in status else "#e67e22" if ("Low" in status or "High" in status) else "#2c3e50"
+    
+    html = f"""
+    <div class="{box_class}">
+        <div class="param-name">{name}</div>
+        <div class="param-value" style="color: {value_color};">{value}</div>
+        <div class="param-unit">{unit}</div>
+        <div class="param-range">Ref: {ref_range}</div>
+        <div class="param-status" style="color: {status_color};">{'⚠️ ' if status != 'Normal' else '✅ '}{status}</div>
+    </div>
+    """
+    return html
 
-def parse_cbc_values(text):
-    """Parse CBC values from extracted text"""
-    cbc_data = {}
+def display_parameters_grid(parameters, reference_ranges, panel_name):
+    """Display parameters in a grid layout with colored boxes"""
+    if not parameters:
+        st.warning(f"No {panel_name} parameters detected in the uploaded document.")
+        return {}
     
-    # Patterns for different CBC parameters
-    patterns = {
-        'RBC': r'(?:RBC|Red Blood Cell|Red Blood Cells|Erythrocytes)[\s:]*(\d+\.?\d*)',
-        'Hemoglobin': r'(?:Hemoglobin|Hb|HGB)[\s:]*(\d+\.?\d*)',
-        'Hematocrit': r'(?:Hematocrit|Hct|HCT)[\s:]*(\d+\.?\d*)',
-        'MCV': r'(?:MCV|Mean Corpuscular Volume)[\s:]*(\d+\.?\d*)',
-        'MCH': r'(?:MCH|Mean Corpuscular Hb)[\s:]*(\d+\.?\d*)',
-        'MCHC': r'(?:MCHC)[\s:]*(\d+\.?\d*)',
-        'RDW': r'(?:RDW|Red Cell Distribution Width)[\s:]*(\d+\.?\d*)',
-        'WBC': r'(?:WBC|White Blood Cell|White Blood Cells|Leukocytes)[\s:]*(\d+\.?\d*)',
-        'Platelets': r'(?:Platelets|PLT|Platelet Count)[\s:]*(\d+)',
-        'MPV': r'(?:MPV|Mean Platelet Volume)[\s:]*(\d+\.?\d*)',
-        'Neutrophils': r'(?:Neutrophils|NEUT|Segs)[\s:]*(\d+\.?\d*)',
-        'Lymphocytes': r'(?:Lymphocytes|LYMPH)[\s:]*(\d+\.?\d*)',
-        'Monocytes': r'(?:Monocytes|MONO)[\s:]*(\d+\.?\d*)',
-        'Eosinophils': r'(?:Eosinophils|EO)[\s:]*(\d+\.?\d*)',
-        'Basophils': r'(?:Basophils|BASO)[\s:]*(\d+\.?\d*)',
-        'Reticulocytes': r'(?:Reticulocytes|Retic)[\s:]*(\d+\.?\d*)'
-    }
+    analysis_results = {}
+    cols_per_row = 4
+    param_list = list(parameters.items())
     
-    for param, pattern in patterns.items():
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        if matches:
-            try:
-                cbc_data[param] = float(matches[0])
-            except:
-                pass
+    for i in range(0, len(param_list), cols_per_row):
+        cols = st.columns(cols_per_row)
+        for j, col in enumerate(cols):
+            if i + j < len(param_list):
+                param_name, param_value = param_list[i + j]
+                
+                # Find matching reference range
+                ref_info = None
+                for ref_key, ref_val in reference_ranges.items():
+                    if ref_key.lower() == param_name.lower() or any(
+                        alias.lower() == param_name.lower() 
+                        for alias in ref_val.get('aliases', [])
+                    ):
+                        ref_info = ref_val
+                        break
+                
+                if ref_info:
+                    analysis = analyze_parameter(param_name, param_value, ref_info)
+                    analysis_results[param_name] = analysis
+                    
+                    with col:
+                        st.markdown(
+                            render_parameter_box(
+                                param_name,
+                                param_value,
+                                ref_info.get('unit', ''),
+                                f"{ref_info.get('low', 'N/A')} - {ref_info.get('high', 'N/A')}",
+                                analysis['status']
+                            ),
+                            unsafe_allow_html=True
+                        )
+                else:
+                    with col:
+                        st.markdown(
+                            render_parameter_box(
+                                param_name,
+                                param_value,
+                                '',
+                                'N/A',
+                                'Unknown'
+                            ),
+                            unsafe_allow_html=True
+                        )
     
-    return cbc_data
+    return analysis_results
 
-def check_sample_quality(cbc_data):
-    """Assess sample quality based on Rule of Threes and other criteria"""
-    quality_issues = []
-    warnings = []
-    
-    if all(k in cbc_data for k in ['RBC', 'Hemoglobin', 'Hematocrit']):
-        rbc = cbc_data['RBC']
-        hgb = cbc_data['Hemoglobin']
-        hct = cbc_data['Hematocrit']
-        
-        # Rule of Threes: Hgb ≈ 3 × RBC, Hct ≈ 3 × Hgb
-        expected_hgb = rbc * 3
-        expected_hct = hgb * 3
-        
-        hgb_deviation = abs(hgb - expected_hgb) / expected_hgb * 100
-        hct_deviation = abs(hct - expected_hct) / expected_hct * 100
-        
-        if hgb_deviation > 10:
-            quality_issues.append(f"Hemoglobin ({hgb}) deviates {hgb_deviation:.1f}% from expected ({expected_hgb:.1f}) - possible hemolysis or sample error")
-        if hct_deviation > 10:
-            quality_issues.append(f"Hematocrit ({hct}%) deviates {hct_deviation:.1f}% from expected ({expected_hct:.1f}%) - possible sample error")
-    
-    # Check for critical values that might indicate sample issues
-    if 'MCHC' in cbc_data:
-        mchc = cbc_data['MCHC']
-        if mchc > 37:
-            quality_issues.append(f"Elevated MCHC ({mchc}) suggests spherocytosis, cold agglutinins, or sample interference")
-        elif mchc < 30:
-            quality_issues.append(f"Low MCHC ({mchc}) suggests iron deficiency or hypochromia")
-    
-    if 'MCV' in cbc_data and cbc_data['MCV'] > 105:
-        warnings.append("Elevated MCV may indicate sample aging (>72 hours) or macrocytosis")
-    
-    if 'Platelets' in cbc_data and cbc_data['Platelets'] < 50:
-        warnings.append("Severe thrombocytopenia - verify with blood smear for platelet clumping")
-    
-    return quality_issues, warnings
-
-def analyze_parameter(param, value, gender='male'):
-    """Analyze individual parameter and provide interpretation"""
-    interpretation = {
-        'status': 'normal',
-        'analysis': '',
-        'differential': [],
-        'clinical_significance': ''
-    }
-    
-    if param in ['RBC', 'Hemoglobin', 'Hematocrit']:
-        ref = REFERENCE_RANGES[param][gender]
-        unit = REFERENCE_RANGES[param]['unit']
-    else:
-        ref = REFERENCE_RANGES[param]['range']
-        unit = REFERENCE_RANGES[param]['unit']
-    
-    low, high = ref
-    
-    if value < low:
-        interpretation['status'] = 'low'
-    elif value > high:
-        interpretation['status'] = 'high'
-    else:
-        interpretation['status'] = 'normal'
-    
-    # Parameter-specific analysis
-    analyses = {
-        'RBC': {
-            'low': {
-                'analysis': 'Decreased RBC count indicates anemia or blood loss',
-                'differential': [
-                    'Iron deficiency anemia',
-                    'Anemia of chronic disease',
-                    'Thalassemia trait',
-                    'Vitamin B12/Folate deficiency',
-                    'Hemolysis',
-                    'Bone marrow failure',
-                    'Acute or chronic blood loss'
-                ],
-                'clinical': 'Requires correlation with hemoglobin, MCV, and reticulocyte count'
-            },
-            'high': {
-                'analysis': 'Elevated RBC count suggests polycythemia or dehydration',
-                'differential': [
-                    'Dehydration (relative polycythemia)',
-                    'Polycythemia vera (primary polycythemia)',
-                    'Secondary polycythemia (hypoxia, COPD, high altitude)',
-                    'Ectopic erythropoietin production',
-                    'Thalassemia minor (high RBC, low MCV)'
-                ],
-                'clinical': 'Check hematocrit and hemoglobin; evaluate for JAK2 mutation if primary polycythemia suspected'
-            }
-        },
-        'Hemoglobin': {
-            'low': {
-                'analysis': 'Anemia - decreased oxygen-carrying capacity',
-                'differential': [
-                    'Iron deficiency (most common)',
-                    'Anemia of chronic disease/inflammation',
-                    'Acute or chronic blood loss',
-                    'Hemolytic anemia',
-                    'Bone marrow suppression/aplasia',
-                    'Nutritional deficiencies (B12, folate)'
-                ],
-                'clinical': 'Severity determines symptoms; acute vs chronic presentation differs'
-            },
-            'high': {
-                'analysis': 'Elevated hemoglobin suggests hemoconcentration or polycythemia',
-                'differential': [
-                    'Dehydration',
-                    'Polycythemia vera',
-                    'Secondary polycythemia',
-                    'Smoking-related',
-                    'Androgen use'
-                ],
-                'clinical': 'Risk of thrombosis if true polycythemia'
-            }
-        },
-        'MCV': {
-            'low': {
-                'analysis': 'Microcytosis - small RBCs',
-                'differential': [
-                    'Iron deficiency anemia (most common)',
-                    'Thalassemia trait/alpha or beta',
-                    'Anemia of chronic disease (sometimes)',
-                    'Sideroblastic anemia',
-                    'Lead poisoning'
-                ],
-                'clinical': 'Check iron studies, hemoglobin electrophoresis if indicated; RDW helps distinguish iron deficiency (high RDW) from thalassemia (normal RDW)'
-            },
-            'high': {
-                'analysis': 'Macrocytosis - large RBCs',
-                'differential': [
-                    'Vitamin B12 deficiency',
-                    'Folate deficiency',
-                    'Liver disease',
-                    'Alcohol use',
-                    'Myelodysplastic syndrome',
-                    'Hypothyroidism',
-                    'Reticulocytosis (hemolysis/bleeding)',
-                    'Medications (methotrexate, zidovudine)',
-                    'Sample aging artifact'
-                ],
-                'clinical': 'Check B12, folate, LFTs, TSH; peripheral smear for hypersegmented neutrophils'
-            }
-        },
-        'RDW': {
-            'high': {
-                'analysis': 'Increased RBC size variation (anisocytosis)',
-                'differential': [
-                    'Iron deficiency anemia (early indicator)',
-                    'Mixed deficiency (iron + B12/folate)',
-                    'Recent transfusion',
-                    'Hemoglobinopathies',
-                    'Myelodysplastic syndrome'
-                ],
-                'clinical': 'Useful in distinguishing iron deficiency (high RDW) from thalassemia (normal RDW) in microcytic anemia'
-            }
-        },
-        'WBC': {
-            'low': {
-                'analysis': 'Leukopenia - increased infection risk',
-                'differential': [
-                    'Viral infections',
-                    'Bone marrow suppression (chemotherapy, radiation)',
-                    'Aplastic anemia',
-                    'Autoimmune disorders',
-                    'Splenomegaly/hypersplenism',
-                    'Drug-induced',
-                    'Nutritional deficiency (B12, folate)'
-                ],
-                'clinical': 'Neutropenia is most clinically significant; risk of bacterial infections if ANC <1000'
-            },
-            'high': {
-                'analysis': 'Leukocytosis - infection, inflammation, or malignancy',
-                'differential': [
-                    'Bacterial infection (neutrophilia)',
-                    'Inflammation/tissue necrosis',
-                    'Corticosteroid use',
-                    'Myeloproliferative neoplasms',
-                    'Leukemia (especially if blasts present)',
-                    'Physiological stress, exercise',
-                    'Pregnancy'
-                ],
-                'clinical': 'Review differential count; left shift suggests bacterial infection; blasts require urgent hematology referral'
-            }
-        },
-        'Platelets': {
-            'low': {
-                'analysis': 'Thrombocytopenia - bleeding risk',
-                'differential': [
-                    'Immune thrombocytopenia (ITP)',
-                    'Drug-induced thrombocytopenia',
-                    'Bone marrow failure/aplasia',
-                    'Sepsis/DIC',
-                    'TTP/HUS',
-                    'Splenic sequestration',
-                    'Pseudothrombocytopenia (EDTA-dependent agglutinin)'
-                ],
-                'clinical': 'Check peripheral smear for clumping; severe bleeding risk if <20,000; spontaneous bleeding if <10,000'
-            },
-            'high': {
-                'analysis': 'Thrombocytosis',
-                'differential': [
-                    'Reactive thrombocytosis (infection, inflammation, iron deficiency)',
-                    'Myeloproliferative neoplasms (essential thrombocythemia)',
-                    'Post-splenectomy',
-                    'Malignancy'
-                ],
-                'clinical': 'Iron deficiency is common cause of reactive thrombocytosis; JAK2/CALR/MPL testing if persistent unexplained thrombocytosis'
-            }
-        },
-        'MPV': {
-            'low': {
-                'analysis': 'Small platelets',
-                'differential': [
-                    'Bone marrow suppression/aplasia',
-                    'Wiskott-Aldrich syndrome',
-                    'Splenic sequestration'
-                ],
-                'clinical': 'Inverse relationship with platelet count normally; low MPV with low platelets suggests decreased production'
-            },
-            'high': {
-                'analysis': 'Large platelets - young, active platelets',
-                'differential': [
-                    'Immune thrombocytopenia (ITP)',
-                    'Recovery from bone marrow suppression',
-                    'Bernard-Soulier syndrome',
-                    'Gray platelet syndrome',
-                    'MYH9-related disease'
-                ],
-                'clinical': 'High MPV with thrombocytopenia suggests increased platelet destruction with compensatory production'
-            }
-        }
-    }
-    
-    if param in analyses and interpretation['status'] in analyses[param]:
-        data = analyses[param][interpretation['status']]
-        interpretation['analysis'] = data['analysis']
-        interpretation['differential'] = data['differential']
-        interpretation['clinical_significance'] = data['clinical']
-    else:
-        interpretation['analysis'] = 'Within normal limits'
-        interpretation['differential'] = ['No significant differential diagnosis']
-        interpretation['clinical_significance'] = 'Normal parameter'
-    
-    return interpretation
-
-def generate_ai_review(cbc_data, gender='male'):
-    """Generate comprehensive AI analysis"""
-    review = []
-    
-    # Overall assessment
-    abnormal_params = []
-    for param, value in cbc_data.items():
-        if param in REFERENCE_RANGES:
-            if param in ['RBC', 'Hemoglobin', 'Hematocrit']:
-                low, high = REFERENCE_RANGES[param][gender]
-            else:
-                low, high = REFERENCE_RANGES[param]['range']
-            
-            if value < low or value > high:
-                abnormal_params.append(param)
+def display_analysis_section(analysis_results, panel_name):
+    """Display detailed analysis for abnormal parameters"""
+    abnormal_params = {k: v for k, v in analysis_results.items() if v['status'] != 'Normal'}
     
     if not abnormal_params:
-        review.append("## Overall Assessment: NORMAL CBC")
-        review.append("All parameters within normal limits. No significant hematologic abnormalities detected.")
-    else:
-        review.append(f"## Overall Assessment: ABNORMAL CBC")
-        review.append(f"Abnormal parameters: {', '.join(abnormal_params)}")
+        st.success(f"✅ All {panel_name} parameters are within normal limits.")
+        return
     
-    # Pattern recognition
-    patterns = []
+    st.markdown(f'<div class="sub-header">🔍 Detailed Analysis - {panel_name}</div>', unsafe_allow_html=True)
     
-    # Anemia patterns
-    if 'Hemoglobin' in cbc_data and 'MCV' in cbc_data:
-        hgb = cbc_data['Hemoglobin']
-        mcv = cbc_data['MCV']
+    # Critical values alert
+    critical_params = {k: v for k, v in abnormal_params.items() if 'Critical' in v['status']}
+    if critical_params:
+        st.markdown('<div class="critical-alert">🚨 CRITICAL VALUES DETECTED - Immediate clinical attention may be required!</div>', unsafe_allow_html=True)
+        for param, analysis in critical_params.items():
+            st.error(f"**{param}**: {analysis['value']} {analysis.get('unit', '')} - {analysis['status']}")
+    
+    # Detailed analysis for each abnormal parameter
+    for param, analysis in abnormal_params.items():
+        with st.expander(f"{'🔴' if 'Critical' in analysis['status'] else '🟡'} {param}: {analysis['value']} - {analysis['status']}", expanded='Critical' in analysis['status']):
+            
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.markdown("**Parameter Details:**")
+                st.write(f"- **Value:** {analysis['value']} {analysis.get('unit', '')}")
+                st.write(f"- **Reference Range:** {analysis.get('ref_low', 'N/A')} - {analysis.get('ref_high', 'N/A')} {analysis.get('unit', '')}")
+                st.write(f"- **Status:** {analysis['status']}")
+                if analysis.get('deviation_pct') is not None:
+                    st.write(f"- **Deviation:** {analysis['deviation_pct']:.1f}% from normal range")
+                
+                # Parameter-specific discussion
+                discussion = get_parameter_discussion(param, analysis['status'])
+                if discussion:
+                    st.markdown("**Clinical Discussion:**")
+                    st.markdown(f'<div class="diagnosis-box">{discussion}</div>', unsafe_allow_html=True)
+            
+            with col2:
+                # Differential diagnosis
+                differentials = get_differential_diagnosis(param, analysis['status'])
+                if differentials:
+                    st.markdown("**Differential Diagnosis:**")
+                    for i, dx in enumerate(differentials, 1):
+                        st.markdown(f'<div class="diagnosis-box"><strong>{i}. {dx["diagnosis"]}</strong><br>{dx["discussion"]}</div>', unsafe_allow_html=True)
+
+def manual_entry_form():
+    """Display manual entry form for blood parameters"""
+    st.markdown('<div class="sub-header">📝 Manual Parameter Entry</div>', unsafe_allow_html=True)
+    
+    panel_type = st.selectbox(
+        "Select Investigation Panel",
+        ["CBC", "LFT", "KFT", "HbA1c", "Lipid Profile", "Iron Studies", "TFT"]
+    )
+    
+    parameters = {}
+    
+    if panel_type == "CBC":
+        st.markdown("#### Complete Blood Count (CBC)")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            parameters['WBC'] = st.number_input("WBC (×10³/µL)", min_value=0.0, max_value=500.0, value=0.0, step=0.1, format="%.2f")
+            parameters['RBC'] = st.number_input("RBC (×10⁶/µL)", min_value=0.0, max_value=15.0, value=0.0, step=0.01, format="%.2f")
+            parameters['Hemoglobin'] = st.number_input("Hemoglobin (g/dL)", min_value=0.0, max_value=25.0, value=0.0, step=0.1, format="%.1f")
+        with col2:
+            parameters['Hematocrit'] = st.number_input("Hematocrit (%)", min_value=0.0, max_value=80.0, value=0.0, step=0.1, format="%.1f")
+            parameters['MCV'] = st.number_input("MCV (fL)", min_value=0.0, max_value=150.0, value=0.0, step=0.1, format="%.1f")
+            parameters['MCH'] = st.number_input("MCH (pg)", min_value=0.0, max_value=50.0, value=0.0, step=0.1, format="%.1f")
+        with col3:
+            parameters['MCHC'] = st.number_input("MCHC (g/dL)", min_value=0.0, max_value=40.0, value=0.0, step=0.1, format="%.1f")
+            parameters['RDW'] = st.number_input("RDW (%)", min_value=0.0, max_value=30.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Platelet Count'] = st.number_input("Platelet Count (×10³/µL)", min_value=0.0, max_value=2000.0, value=0.0, step=1.0, format="%.0f")
+        with col4:
+            parameters['MPV'] = st.number_input("MPV (fL)", min_value=0.0, max_value=20.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Neutrophils'] = st.number_input("Neutrophils (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Lymphocytes'] = st.number_input("Lymphocytes (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%.1f")
         
-        if hgb < (12.0 if gender == 'female' else 13.5):
-            if mcv < 80:
-                patterns.append("**Microcytic Anemia Pattern**: Suggests iron deficiency, thalassemia, or anemia of chronic disease")
-            elif mcv > 100:
-                patterns.append("**Macrocytic Anemia Pattern**: Suggests B12/folate deficiency, liver disease, MDS, or hemolysis")
-            else:
-                patterns.append("**Normocytic Anemia Pattern**: Suggests acute blood loss, hemolysis, anemia of chronic disease, or early iron deficiency")
+        col5, col6, col7, col8 = st.columns(4)
+        with col5:
+            parameters['Monocytes'] = st.number_input("Monocytes (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%.1f")
+        with col6:
+            parameters['Eosinophils'] = st.number_input("Eosinophils (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%.1f")
+        with col7:
+            parameters['Basophils'] = st.number_input("Basophils (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%.1f")
+        with col8:
+            parameters['Reticulocyte Count'] = st.number_input("Reticulocyte Count (%)", min_value=0.0, max_value=30.0, value=0.0, step=0.1, format="%.1f")
     
-    # Thrombocytopenia patterns
-    if 'Platelets' in cbc_data and 'MPV' in cbc_data:
-        plt = cbc_data['Platelets']
-        mpv = cbc_data['MPV']
-        
-        if plt < 150:
-            if mpv > 11.5:
-                patterns.append("**High MPV with Thrombocytopenia**: Suggests peripheral destruction (ITP, TTP) with compensatory production")
-            else:
-                patterns.append("**Low MPV with Thrombocytopenia**: Suggests bone marrow failure or splenic sequestration")
+    elif panel_type == "LFT":
+        st.markdown("#### Liver Function Tests (LFT)")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            parameters['Total Bilirubin'] = st.number_input("Total Bilirubin (mg/dL)", min_value=0.0, max_value=50.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Direct Bilirubin'] = st.number_input("Direct Bilirubin (mg/dL)", min_value=0.0, max_value=30.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Indirect Bilirubin'] = st.number_input("Indirect Bilirubin (mg/dL)", min_value=0.0, max_value=30.0, value=0.0, step=0.1, format="%.1f")
+        with col2:
+            parameters['AST'] = st.number_input("AST/SGOT (U/L)", min_value=0.0, max_value=5000.0, value=0.0, step=1.0, format="%.0f")
+            parameters['ALT'] = st.number_input("ALT/SGPT (U/L)", min_value=0.0, max_value=5000.0, value=0.0, step=1.0, format="%.0f")
+            parameters['ALP'] = st.number_input("ALP (U/L)", min_value=0.0, max_value=2000.0, value=0.0, step=1.0, format="%.0f")
+        with col3:
+            parameters['GGT'] = st.number_input("GGT (U/L)", min_value=0.0, max_value=2000.0, value=0.0, step=1.0, format="%.0f")
+            parameters['Total Protein'] = st.number_input("Total Protein (g/dL)", min_value=0.0, max_value=15.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Albumin'] = st.number_input("Albumin (g/dL)", min_value=0.0, max_value=7.0, value=0.0, step=0.1, format="%.1f")
     
-    # Leukocytosis patterns
-    if 'WBC' in cbc_data and cbc_data['WBC'] > 11.0:
-        patterns.append("**Leukocytosis**: Consider infection, inflammation, stress, or hematologic malignancy")
+    elif panel_type == "KFT":
+        st.markdown("#### Kidney Function Tests (KFT)")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            parameters['BUN'] = st.number_input("BUN (mg/dL)", min_value=0.0, max_value=200.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Creatinine'] = st.number_input("Creatinine (mg/dL)", min_value=0.0, max_value=30.0, value=0.0, step=0.01, format="%.2f")
+        with col2:
+            parameters['Uric Acid'] = st.number_input("Uric Acid (mg/dL)", min_value=0.0, max_value=20.0, value=0.0, step=0.1, format="%.1f")
+            parameters['eGFR'] = st.number_input("eGFR (mL/min/1.73m²)", min_value=0.0, max_value=200.0, value=0.0, step=1.0, format="%.0f")
+        with col3:
+            parameters['Sodium'] = st.number_input("Sodium (mEq/L)", min_value=0.0, max_value=200.0, value=0.0, step=0.1, format="%.1f")
+            parameters['Potassium'] = st.number_input("Potassium (mEq/L)", min_value=0.0, max_value=10.0, value=0.0, step=0.01, format="%.2f")
     
-    if patterns:
-        review.append("\n## Recognized Patterns:")
-        for pattern in patterns:
-            review.append(f"- {pattern}")
+    elif panel_type == "HbA1c":
+        st.markdown("#### HbA1c / Glycated Hemoglobin")
+        parameters['HbA1c'] = st.number_input("HbA1c (%)", min_value=0.0, max_value=20.0, value=0.0, step=0.1, format="%.1f")
+        parameters['Estimated Average Glucose'] = st.number_input("Estimated Average Glucose (mg/dL)", min_value=0.0, max_value=500.0, value=0.0, step=1.0, format="%.0f")
     
-    # Recommendations
-    review.append("\n## Recommendations:")
+    elif panel_type == "Lipid Profile":
+        st.markdown("#### Lipid Profile")
+        col1, col2 = st.columns(2)
+        with col1:
+            parameters['Total Cholesterol'] = st.number_input("Total Cholesterol (mg/dL)", min_value=0.0, max_value=1000.0, value=0.0, step=1.0, format="%.0f")
+            parameters['LDL'] = st.number_input("LDL Cholesterol (mg/dL)", min_value=0.0, max_value=500.0, value=0.0, step=1.0, format="%.0f")
+            parameters['HDL'] = st.number_input("HDL Cholesterol (mg/dL)", min_value=0.0, max_value=200.0, value=0.0, step=1.0, format="%.0f")
+        with col2:
+            parameters['Triglycerides'] = st.number_input("Triglycerides (mg/dL)", min_value=0.0, max_value=5000.0, value=0.0, step=1.0, format="%.0f")
+            parameters['VLDL'] = st.number_input("VLDL (mg/dL)", min_value=0.0, max_value=200.0, value=0.0, step=1.0, format="%.0f")
+            parameters['TC/HDL Ratio'] = st.number_input("TC/HDL Ratio", min_value=0.0, max_value=20.0, value=0.0, step=0.1, format="%.1f")
     
-    if 'MCV' in cbc_data and cbc_data['MCV'] < 80:
-        review.append("- Iron studies (serum iron, ferritin, TIBC)")
-        review.append("- Hemoglobin electrophoresis if iron studies normal")
+    elif panel_type == "Iron Studies":
+        st.markdown("#### Iron Studies")
+        col1, col2 = st.columns(2)
+        with col1:
+            parameters['Serum Iron'] = st.number_input("Serum Iron (µg/dL)", min_value=0.0, max_value=500.0, value=0.0, step=1.0, format="%.0f")
+            parameters['TIBC'] = st.number_input("TIBC (µg/dL)", min_value=0.0, max_value=800.0, value=0.0, step=1.0, format="%.0f")
+        with col2:
+            parameters['Ferritin'] = st.number_input("Ferritin (ng/mL)", min_value=0.0, max_value=5000.0, value=0.0, step=1.0, format="%.0f")
+            parameters['Transferrin Saturation'] = st.number_input("Transferrin Saturation (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%.1f")
     
-    if 'MCV' in cbc_data and cbc_data['MCV'] > 100:
-        review.append("- Vitamin B12 and folate levels")
-        review.append("- Liver function tests")
-        review.append("- TSH")
-        review.append("- Peripheral blood smear examination")
+    elif panel_type == "TFT":
+        st.markdown("#### Thyroid Function Tests (TFT)")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            parameters['TSH'] = st.number_input("TSH (mIU/L)", min_value=0.0, max_value=100.0, value=0.0, step=0.01, format="%.3f")
+        with col2:
+            parameters['Free T3'] = st.number_input("Free T3 (pg/mL)", min_value=0.0, max_value=30.0, value=0.0, step=0.01, format="%.2f")
+        with col3:
+            parameters['Free T4'] = st.number_input("Free T4 (ng/dL)", min_value=0.0, max_value=10.0, value=0.0, step=0.01, format="%.2f")
     
-    if 'Platelets' in cbc_data and cbc_data['Platelets'] < 150:
-        review.append("- Peripheral blood smear to rule out pseudothrombocytopenia")
-        review.append("- If confirmed: coagulation studies, consider bone marrow biopsy if persistent")
+    # Remove zero values
+    parameters = {k: v for k, v in parameters.items() if v > 0}
     
-    if 'WBC' in cbc_data and cbc_data['WBC'] > 15:
-        review.append("- Differential count with manual review")
-        review.append("- Blood cultures if infection suspected")
-        review.append("- Peripheral smear for blasts/immature forms")
-    
-    if not any([p in cbc_data for p in ['MCV', 'Platelets', 'WBC']]):
-        review.append("- Repeat CBC to confirm results")
-        review.append("- Peripheral blood smear examination")
-    
-    return "\n".join(review)
+    return panel_type, parameters
+
+
+def get_reference_for_panel(panel_type):
+    """Return appropriate reference ranges for the selected panel"""
+    panel_map = {
+        "CBC": CBC_REFERENCE_RANGES,
+        "LFT": LFT_REFERENCE_RANGES,
+        "KFT": KFT_REFERENCE_RANGES,
+        "HbA1c": HBA1C_REFERENCE_RANGES,
+        "Lipid Profile": LIPID_PROFILE_REFERENCE_RANGES,
+        "Iron Studies": IRON_STUDIES_REFERENCE_RANGES,
+        "TFT": TFT_REFERENCE_RANGES
+    }
+    return panel_map.get(panel_type, {})
+
 
 def main():
-    st.markdown('<h1 class="main-header">🩸 CBC Analyzer Pro</h1>', unsafe_allow_html=True)
+    # Header
+    st.markdown('<div class="main-header">🩸 Blood Investigation Analyzer</div>', unsafe_allow_html=True)
     st.markdown("""
-    <div style="text-align: center; color: #64748b; margin-bottom: 2rem;">
-        Automated Complete Blood Count Analysis with AI-Powered Interpretation<br>
-        <small>Based on UpToDate Clinical Guidelines • Literature Review Current Through: Jan 2026</small>
-    </div>
+    <p style="text-align: center; color: #7f8c8d; font-size: 1.1rem;">
+    Comprehensive analysis of CBC, LFT, KFT, HbA1c, Lipid Profile, Iron Studies, and Thyroid Function Tests
+    </p>
     """, unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
-        st.header("Patient Information")
-        gender = st.selectbox("Gender", ["Male", "Female"])
-        age = st.number_input("Age", min_value=0, max_value=120, value=35)
+        st.image("https://img.icons8.com/color/96/000000/blood-sample.png", width=80)
+        st.markdown("### 🏥 Patient Information")
+        patient_name = st.text_input("Patient Name", placeholder="Enter patient name")
+        patient_age = st.number_input("Age", min_value=0, max_value=120, value=30)
+        patient_gender = st.selectbox("Gender", ["Male", "Female", "Other"])
+        patient_id = st.text_input("Patient ID", placeholder="Enter patient ID")
         
-        st.header("Upload Options")
-        upload_option = st.radio("Choose input method:", 
-                                ["Upload File (PDF/Image)", "Manual Entry"])
-        
-        if upload_option == "Upload File (PDF/Image)":
-            uploaded_file = st.file_uploader("Upload CBC Report", 
-                                           type=['pdf', 'png', 'jpg', 'jpeg'])
-        
-        st.header("Analysis Options")
-        show_differential = st.checkbox("Show Differential Diagnosis", value=True)
-        show_quality = st.checkbox("Sample Quality Assessment", value=True)
-        enable_ai = st.checkbox("Enable AI Review", value=True)
-    
-    # Main content
-    cbc_data = {}
-    
-    if upload_option == "Upload File (PDF/Image)" and 'uploaded_file' in locals() and uploaded_file:
-        st.subheader("Document Processing")
-        
-        file_type = uploaded_file.type
-        extracted_text = ""
-        
-        with st.spinner("Processing document..."):
-            if file_type == "application/pdf":
-                extracted_text = extract_text_from_pdf(uploaded_file)
-            else:
-                image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Image", use_column_width=True)
-                extracted_text = extract_text_from_image(image)
-        
-        if extracted_text:
-            with st.expander("View Extracted Text"):
-                st.text(extracted_text)
-            
-            cbc_data = parse_cbc_values(extracted_text)
-            
-            if cbc_data:
-                st.success(f"Extracted {len(cbc_data)} parameters")
-            else:
-                st.warning("Could not extract CBC values automatically. Please use manual entry.")
-    
-    # Manual entry section
-    if upload_option == "Manual Entry" or not cbc_data:
-        st.subheader("Manual Parameter Entry")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.markdown("**RBC Parameters**")
-            rbc = st.number_input("RBC (x10^12/L)", min_value=0.0, max_value=10.0, value=0.0, step=0.01)
-            hgb = st.number_input("Hemoglobin (g/dL)", min_value=0.0, max_value=25.0, value=0.0, step=0.1)
-            hct = st.number_input("Hematocrit (%)", min_value=0.0, max_value=70.0, value=0.0, step=0.1)
-            mcv = st.number_input("MCV (fL)", min_value=0.0, max_value=150.0, value=0.0, step=0.1)
-            mch = st.number_input("MCH (pg)", min_value=0.0, max_value=50.0, value=0.0, step=0.1)
-            mchc = st.number_input("MCHC (g/dL)", min_value=0.0, max_value=40.0, value=0.0, step=0.1)
-            rdw = st.number_input("RDW (%)", min_value=0.0, max_value=30.0, value=0.0, step=0.1)
-        
-        with col2:
-            st.markdown("**WBC Parameters**")
-            wbc = st.number_input("WBC (x10^9/L)", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-            neut = st.number_input("Neutrophils (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-            lymph = st.number_input("Lymphocytes (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-            mono = st.number_input("Monocytes (%)", min_value=0.0, max_value=20.0, value=0.0, step=0.1)
-            eo = st.number_input("Eosinophils (%)", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
-            baso = st.number_input("Basophils (%)", min_value=0.0, max_value=5.0, value=0.0, step=0.1)
-        
-        with col3:
-            st.markdown("**Platelet Parameters**")
-            plt = st.number_input("Platelets (x10^9/L)", min_value=0, max_value=2000, value=0, step=1)
-            mpv = st.number_input("MPV (fL)", min_value=0.0, max_value=20.0, value=0.0, step=0.1)
-            retic = st.number_input("Reticulocytes (%)", min_value=0.0, max_value=20.0, value=0.0, step=0.1)
-        
-        # Build data dictionary
-        manual_data = {
-            'RBC': rbc, 'Hemoglobin': hgb, 'Hematocrit': hct,
-            'MCV': mcv, 'MCH': mch, 'MCHC': mchc, 'RDW': rdw,
-            'WBC': wbc, 'Neutrophils': neut, 'Lymphocytes': lymph,
-            'Monocytes': mono, 'Eosinophils': eo, 'Basophils': baso,
-            'Platelets': plt, 'MPV': mpv, 'Reticulocytes': retic
-        }
-        
-        cbc_data = {k: v for k, v in manual_data.items() if v > 0}
-    
-    # Analysis section
-    if cbc_data:
         st.markdown("---")
-        st.subheader("📊 CBC Results Analysis")
+        st.markdown("### ⚙️ Settings")
+        input_method = st.radio(
+            "Input Method",
+            ["📄 Upload Document", "📝 Manual Entry"],
+            help="Choose how to input blood investigation results"
+        )
         
-        # Create results grid
-        cols = st.columns(3)
-        col_idx = 0
+        st.markdown("---")
+        st.markdown("### ℹ️ About")
+        st.info("""
+        This application analyzes blood investigation reports including:
+        - **CBC** - Complete Blood Count
+        - **LFT** - Liver Function Tests
+        - **KFT** - Kidney Function Tests
+        - **HbA1c** - Glycated Hemoglobin
+        - **Lipid Profile**
+        - **Iron Studies**
+        - **TFT** - Thyroid Function Tests
         
-        for param, value in cbc_data.items():
-            if param not in REFERENCE_RANGES:
-                continue
-                
-            with cols[col_idx % 3]:
-                if param in ['RBC', 'Hemoglobin', 'Hematocrit']:
-                    low, high = REFERENCE_RANGES[param][gender.lower()]
-                else:
-                    low, high = REFERENCE_RANGES[param]['range']
-                unit = REFERENCE_RANGES[param]['unit']
-                
-                # Determine status
-                if value < low:
-                    status_class = "abnormal-low"
-                    status_icon = "🔽"
-                    status_text = "LOW"
-                elif value > high:
-                    status_class = "abnormal-high"
-                    status_icon = "🔼"
-                    status_text = "HIGH"
-                else:
-                    status_class = "normal"
-                    status_icon = "✅"
-                    status_text = "NORMAL"
-                
-                st.markdown(f"""
-                <div class="parameter-box">
-                    <strong>{param}</strong><br>
-                    <span style="font-size: 1.5rem; font-weight: bold;" class="{status_class}">
-                        {value} {unit} {status_icon}
-                    </span><br>
-                    <small>Reference: {low}-{high} {unit}</small><br>
-                    <small>Status: {status_text}</small>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                col_idx += 1
+        Upload a PDF or image of your report, or manually enter values.
+        """)
         
-        # Sample Quality Assessment
-        if show_quality:
-            st.markdown("---")
-            st.subheader("🔍 Sample Quality Assessment")
-            
-            quality_issues, warnings = check_sample_quality(cbc_data)
-            
-            if quality_issues:
-                for issue in quality_issues:
-                    st.markdown(f"""
-                    <div class="warning-box">
-                        <strong>⚠️ Quality Issue:</strong> {issue}
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            if warnings:
-                for warning in warnings:
-                    st.markdown(f"""
-                    <div class="info-box">
-                        <strong>ℹ️ Note:</strong> {warning}
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            if not quality_issues and not warnings:
-                st.success("✅ No significant quality issues detected. Sample appears adequate.")
+        st.markdown("---")
+        st.caption("⚠️ **Disclaimer**: This tool is for educational and screening purposes only. Always consult a qualified healthcare professional for medical advice and treatment decisions.")
+    
+    # Main Content
+    if "📄 Upload Document" in input_method:
+        st.markdown('<div class="sub-header">📤 Upload Blood Investigation Report</div>', unsafe_allow_html=True)
         
-        # Detailed Analysis
-        if show_differential:
-            st.markdown("---")
-            st.subheader("🩺 Detailed Parameter Analysis")
+        uploaded_file = st.file_uploader(
+            "Upload your blood report (PDF, JPG, JPEG, PNG)",
+            type=['pdf', 'jpg', 'jpeg', 'png'],
+            help="Upload a clear image or PDF of your blood investigation report"
+        )
+        
+        if uploaded_file is not None:
+            file_type = uploaded_file.type
             
-            for param, value in cbc_data.items():
-                if param not in REFERENCE_RANGES:
-                    continue
+            # Display uploaded file info
+            col_info1, col_info2, col_info3 = st.columns(3)
+            with col_info1:
+                st.info(f"📁 **File:** {uploaded_file.name}")
+            with col_info2:
+                st.info(f"📊 **Type:** {file_type}")
+            with col_info3:
+                st.info(f"💾 **Size:** {uploaded_file.size / 1024:.1f} KB")
+            
+            # Extract text
+            with st.spinner("🔄 Extracting data from document..."):
+                try:
+                    if 'pdf' in file_type:
+                        extracted_text = extract_text_from_pdf(uploaded_file)
+                    else:
+                        extracted_text = extract_text_from_image(uploaded_file)
                     
-                interpretation = analyze_parameter(param, value, gender.lower())
+                    if extracted_text:
+                        with st.expander("📜 View Extracted Text", expanded=False):
+                            st.text_area("Raw extracted text:", extracted_text, height=200)
+                        
+                        # Parse the extracted text
+                        parsed_results = parse_blood_report(extracted_text)
+                        
+                        if parsed_results:
+                            st.success(f"✅ Successfully extracted {sum(len(v) for v in parsed_results.values())} parameters from the document.")
+                            
+                            # Store results in session state
+                            st.session_state['parsed_results'] = parsed_results
+                            st.session_state['patient_info'] = {
+                                'name': patient_name,
+                                'age': patient_age,
+                                'gender': patient_gender,
+                                'id': patient_id
+                            }
+                            
+                            # Display results by panel
+                            all_analysis = {}
+                            for panel_name, params in parsed_results.items():
+                                if params:
+                                    ref_ranges = get_reference_for_panel(panel_name)
+                                    st.markdown(f'<div class="sub-header">📊 {panel_name} Results</div>', unsafe_allow_html=True)
+                                    analysis = display_parameters_grid(params, ref_ranges, panel_name)
+                                    all_analysis[panel_name] = analysis
+                                    
+                                    # Sample quality assessment
+                                    if panel_name == "CBC":
+                                        quality = get_sample_quality_assessment(params)
+                                        st.markdown(f'<div class="quality-box"><strong>🔬 Sample Quality Assessment:</strong><br>{quality}</div>', unsafe_allow_html=True)
+                                    
+                                    # Detailed analysis
+                                    display_analysis_section(analysis, panel_name)
+                                    st.markdown("---")
+                            
+                            # Comprehensive analysis
+                            if all_analysis:
+                                st.markdown('<div class="sub-header">📋 Comprehensive Analysis Summary</div>', unsafe_allow_html=True)
+                                comprehensive = get_comprehensive_analysis(all_analysis, patient_age, patient_gender)
+                                st.markdown(comprehensive, unsafe_allow_html=True)
+                            
+                            # Store for AI review
+                            st.session_state['all_analysis'] = all_analysis
+                        else:
+                            st.warning("⚠️ Could not parse blood parameters from the extracted text. Please try manual entry.")
+                    else:
+                        st.error("❌ Could not extract text from the document. Please ensure the document is clear and readable, or use manual entry.")
                 
-                if interpretation['status'] != 'normal':
-                    with st.expander(f"{param}: {value} ({interpretation['status'].upper()})"):
-                        st.markdown(f"**Analysis:** {interpretation['analysis']}")
-                        
-                        st.markdown("**Differential Diagnosis:**")
-                        for dx in interpretation['differential']:
-                            st.markdown(f"- {dx}")
-                        
-                        st.markdown(f"**Clinical Significance:** {interpretation['clinical_significance']}")
+                except Exception as e:
+                    st.error(f"❌ Error processing document: {str(e)}")
+                    st.info("💡 Tip: Try uploading a clearer image or use manual entry instead.")
+    
+    else:  # Manual Entry
+        panel_type, parameters = manual_entry_form()
         
-        # AI Review
-        if enable_ai:
-            st.markdown("---")
-            st.subheader("🤖 AI Comprehensive Review")
-            
-            ai_review = generate_ai_review(cbc_data, gender.lower())
-            st.markdown(ai_review)
-            
-            # Disclaimer
-            st.markdown("""
-            <div style="background-color: #fee2e2; border-left: 4px solid #ef4444; padding: 15px; border-radius: 5px; margin-top: 20px; font-size: 0.9rem;">
-                <strong>⚠️ Medical Disclaimer:</strong> This analysis is for educational and informational purposes only. 
-                It does not constitute medical advice. All results should be interpreted by qualified healthcare professionals 
-                in the context of the patient's full clinical picture. Always correlate with clinical findings and consider 
-                repeat testing if results are unexpected.
-            </div>
-            """, unsafe_allow_html=True)
+        if st.button("🔍 Analyze Results", type="primary", use_container_width=True):
+            if parameters:
+                ref_ranges = get_reference_for_panel(panel_type)
+                
+                st.markdown(f'<div class="sub-header">📊 {panel_type} Results</div>', unsafe_allow_html=True)
+                analysis = display_parameters_grid(parameters, ref_ranges, panel_type)
+                
+                # Sample quality assessment for CBC
+                if panel_type == "CBC":
+                    quality = get_sample_quality_assessment(parameters)
+                    st.markdown(f'<div class="quality-box"><strong>🔬 Sample Quality Assessment:</strong><br>{quality}</div>', unsafe_allow_html=True)
+                
+                # Detailed analysis
+                display_analysis_section(analysis, panel_type)
+                
+                # Comprehensive analysis
+                all_analysis = {panel_type: analysis}
+                st.markdown('<div class="sub-header">📋 Comprehensive Analysis Summary</div>', unsafe_allow_html=True)
+                comprehensive = get_comprehensive_analysis(all_analysis, patient_age, patient_gender)
+                st.markdown(comprehensive, unsafe_allow_html=True)
+                
+                # Store for AI review
+                st.session_state['all_analysis'] = all_analysis
+                st.session_state['parsed_results'] = {panel_type: parameters}
+                st.session_state['patient_info'] = {
+                    'name': patient_name,
+                    'age': patient_age,
+                    'gender': patient_gender,
+                    'id': patient_id
+                }
+            else:
+                st.warning("⚠️ Please enter at least one parameter value.")
+    
+    # AI Review Section
+    st.markdown("---")
+    st.markdown('<div class="sub-header">🤖 AI-Powered Review</div>', unsafe_allow_html=True)
+    
+    ai_provider = st.selectbox(
+        "Select AI Provider",
+        ["OpenAI (GPT-4)", "Google (Gemini)", "Local Analysis (No API needed)"],
+        help="Choose an AI provider for advanced review. Local analysis uses built-in rules."
+    )
+    
+    if ai_provider != "Local Analysis (No API needed)":
+        api_key = st.text_input(
+            f"Enter {'OpenAI' if 'OpenAI' in ai_provider else 'Google'} API Key",
+            type="password",
+            help="Your API key is not stored and is only used for this session."
+        )
+    else:
+        api_key = None
+    
+    if st.button("🧠 Generate AI Review", type="secondary", use_container_width=True):
+        if 'all_analysis' in st.session_state and st.session_state['all_analysis']:
+            with st.spinner("🔄 Generating AI-powered review..."):
+                patient_info = st.session_state.get('patient_info', {})
+                parsed_results = st.session_state.get('parsed_results', {})
+                
+                review = get_ai_review(
+                    parsed_results,
+                    st.session_state['all_analysis'],
+                    patient_info,
+                    ai_provider,
+                    api_key
+                )
+                
+                st.markdown('<div class="sub-header">📝 AI Review Report</div>', unsafe_allow_html=True)
+                st.markdown(review, unsafe_allow_html=True)
+                
+                # Download option
+                st.download_button(
+                    label="📥 Download AI Review Report",
+                    data=review,
+                    file_name=f"ai_review_{patient_info.get('name', 'patient')}_{patient_info.get('id', 'unknown')}.md",
+                    mime="text/markdown"
+                )
+        else:
+            st.warning("⚠️ Please analyze blood parameters first before requesting an AI review.")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; color: #95a5a6; padding: 20px;">
+        <p>🩸 Blood Investigation Analyzer v2.0</p>
+        <p style="font-size: 0.8rem;">Based on evidence-based hematology references including UpToDate clinical resources.</p>
+        <p style="font-size: 0.75rem;">⚠️ This tool is for educational and screening purposes only. Not a substitute for professional medical advice.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 if __name__ == "__main__":
     main()
